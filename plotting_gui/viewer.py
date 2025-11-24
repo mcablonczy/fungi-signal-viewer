@@ -1679,15 +1679,7 @@ class HDF5Viewer(QWidget):
 
 
         # ---------- Positive & negative peaks ----------
-        try:
-            peaks_pos, _ = find_peaks(y_float, **kwargs)
-        except Exception:
-            peaks_pos = np.array([], dtype=int)
-
-        try:
-            peaks_neg, _ = find_peaks(-y_float, **kwargs)
-        except Exception:
-            peaks_neg = np.array([], dtype=int)
+        peaks_pos, peaks_neg = find_pos_neg_peaks(y_float, kwargs)
 
         if peaks_pos.size == 0 and peaks_neg.size == 0:
             return empty_stats
