@@ -38,6 +38,9 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QPointF, QEvent, QDateTime
 from PyQt5.QtGui import QFont
 
+from plotting_gui.peaks import estimate_noise_sigma_mad
+
+
 # Your requested display order (trimmed, exact matches)
 PREFERRED_ORDER = [
     "A-024","B-024","A-023","B-023","A-025","B-025","A-022","B-022",
@@ -791,14 +794,8 @@ class HDF5Viewer(QWidget):
         yb = y - baseline  # baseline-subtracted
     
         # Robust sigma (noise)
-        med = float(np.median(seg_for_noise))
-        mad = float(np.median(np.abs(seg_for_noise - med)))
-        if mad > 0:
-            sigma = 1.4826 * mad
-        else:
-            sigma = float(np.std(seg_for_noise))
-        if not np.isfinite(sigma) or sigma <= 0:
-            sigma = 1e-12
+        sigma = estimate_noise_sigma_mad(seg_for_noise)
+
     
         # ---------- 2) Peak amplitude & sign-handling ----------
         A_peak = float(yb[idx_peak])      # can be + or -
@@ -1203,15 +1200,9 @@ class HDF5Viewer(QWidget):
         fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
         y_float = np.asarray(y, dtype=float)
     
-        # ---------- Noise estimate ----------
-        med = np.median(y_float)
-        mad = np.median(np.abs(y_float - med))
-        if mad > 0:
-            sigma = 1.4826 * mad
-        else:
-            sigma = float(np.std(y_float))
-        if not np.isfinite(sigma) or sigma <= 0:
-            sigma = 1e-12
+        # ---------- 1) Estimate noise σ on this window ----------
+        sigma = estimate_noise_sigma_mad(y_float)
+
     
         # ---------- Build thresholds ----------
         prom_val = None
@@ -1688,15 +1679,9 @@ class HDF5Viewer(QWidget):
         fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
         y_float = np.asarray(y, dtype=float)
 
-        # ---------- Noise estimate ----------
-        med = np.median(y_float)
-        mad = np.median(np.abs(y_float - med))
-        if mad > 0:
-            sigma = 1.4826 * mad
-        else:
-            sigma = float(np.std(y_float))
-        if not np.isfinite(sigma) or sigma <= 0:
-            sigma = 1e-12
+        # ---------- 1) Estimate noise σ on this window ----------
+        sigma = estimate_noise_sigma_mad(y_float)
+
 
         # ---------- Build thresholds ----------
         prom_val = None
@@ -2948,14 +2933,8 @@ class HDF5Viewer(QWidget):
         y_float = np.asarray(y, dtype=float)
 
         # ---------- 1) Estimate noise σ on this window ----------
-        med = np.median(y_float)
-        mad = np.median(np.abs(y_float - med))
-        if mad > 0:
-            sigma = 1.4826 * mad  # robust "std"
-        else:
-            sigma = float(np.std(y_float))
-        if not np.isfinite(sigma) or sigma <= 0:
-            sigma = 1e-12
+        sigma = estimate_noise_sigma_mad(y_float)
+
 
         # ---------- 2) Build prominence & height thresholds ----------
         prom_val = None
