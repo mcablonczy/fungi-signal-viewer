@@ -38,7 +38,11 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QPointF, QEvent, QDateTime
 from PyQt5.QtGui import QFont
 
-from plotting_gui.peaks import estimate_noise_sigma_mad
+from plotting_gui.peaks import (
+    estimate_noise_sigma_mad,
+    PeakThresholdConfig,
+    build_peak_find_kwargs,
+)
 
 
 # Your requested display order (trimmed, exact matches)
@@ -1205,41 +1209,21 @@ class HDF5Viewer(QWidget):
 
     
         # ---------- Build thresholds ----------
-        prom_val = None
-        height_val = None
-    
-        use_rel = getattr(self, "peaks_use_relative", True)
-        if use_rel:
-            k_prom = getattr(self, "peaks_k_prom", 0.0)
-            k_height = getattr(self, "peaks_k_height", 0.0)
-            if k_prom > 0.0:
-                prom_val = k_prom * sigma
-            if k_height > 0.0:
-                height_val = k_height * sigma
-        else:
-            prom_abs = getattr(self, "peaks_prom_abs", 0.0)
-            height_abs = getattr(self, "peaks_height_abs", 0.0)
-            if prom_abs > 0.0:
-                prom_val = prom_abs
-            if height_abs > 0.0:
-                height_val = height_abs
-    
-        kwargs = {}
-        if prom_val is not None and prom_val > 0.0:
-            kwargs["prominence"] = prom_val
-        if height_val is not None and height_val > 0.0:
-            kwargs["height"] = height_val
-    
-        min_dist_s = getattr(self, "peaks_min_dist_s", 0.0)
-        min_width_s = getattr(self, "peaks_min_width_s", 0.0)
-        if min_dist_s > 0.0:
-            dist_samples = int(round(min_dist_s * fs))
-            if dist_samples > 0:
-                kwargs["distance"] = dist_samples
-        if min_width_s > 0.0:
-            width_samples = int(round(min_width_s * fs))
-            if width_samples > 0:
-                kwargs["width"] = width_samples
+        cfg = PeakThresholdConfig(
+            use_relative=getattr(self, "peaks_use_relative", True),
+            k_prom=getattr(self, "peaks_k_prom", 0.0),
+            k_height=getattr(self, "peaks_k_height", 0.0),
+            prom_abs=getattr(self, "peaks_prom_abs", 0.0),
+            height_abs=getattr(self, "peaks_height_abs", 0.0),
+            min_dist_s=getattr(self, "peaks_min_dist_s", 0.0),
+            min_width_s=getattr(self, "peaks_min_width_s", 0.0),
+        )
+        
+        kwargs = build_peak_find_kwargs(
+            sigma=sigma,
+            fs=fs,
+            cfg=cfg,
+        )
     
         # ---------- Positive & negative peaks ----------
         try:

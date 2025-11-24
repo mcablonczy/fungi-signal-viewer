@@ -1,7 +1,20 @@
 
 import numpy as np
+from dataclasses import dataclass
+from typing import Dict
 
-def estimate_noise_sigma_mad(y: np.ndarray, min_sigma: float = 1e-12) -> float:
+@dataclass
+class PeakThresholdConfig:
+    use_relative: bool
+    k_prom: float
+    k_height: float
+    prom_abs: float
+    height_abs: float
+    min_dist_s: float
+    min_width_s: float
+
+def estimate_noise_sigma_mad(
+    y: np.ndarray, min_sigma: float = 1e-12) -> float:
     """
     Robust noise estimate using Median Absolute Deviation (MAD).
 
@@ -34,3 +47,48 @@ def estimate_noise_sigma_mad(y: np.ndarray, min_sigma: float = 1e-12) -> float:
         sigma = float(min_sigma)
 
     return sigma
+
+def build_peak_find_kwargs(
+    sigma: float,
+    fs: float,
+    cfg: PeakThresholdConfig,
+) -> Dict:
+    """
+    Build the kwargs dict for scipy.signal.find_peaks based on the
+    current settings and sigma.
+
+    This is a direct extraction of the existing logic from viewer.py:
+    - relative vs absolute thresholds
+    - min distance, min width
+    """
+    prom_val = None
+    height_val = None
+
+    if cfg.use_relative:
+        if cfg.k_prom > 0.0:
+            prom_val = cfg.k_prom * sigma
+        if cfg.k_height > 0.0:
+            height_val = cfg.k_height * sigma
+    else:
+        if cfg.prom_abs > 0.0:
+            prom_val = cfg.prom_abs
+        if cfg.height_abs > 0.0:
+            height_val = cfg.height_abs
+
+    kwargs: Dict = {}
+    if prom_val is not None and prom_val > 0.0:
+        kwargs["prominence"] = prom_val
+    if height_val is not None and height_val > 0.0:
+        kwargs["height"] = height_val
+
+    if cfg.min_dist_s > 0.0:
+        dist_samples = int(round(cfg.min_dist_s * fs))
+        if dist_samples > 0:
+            kwargs["distance"] = dist_samples
+
+    if cfg.min_width_s > 0.0:
+        width_samples = int(round(cfg.min_width_s * fs))
+        if width_samples > 0:
+            kwargs["width"] = width_samples
+
+    return kwargs
