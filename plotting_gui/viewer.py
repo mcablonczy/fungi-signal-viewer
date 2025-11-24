@@ -2931,6 +2931,7 @@ class HDF5Viewer(QWidget):
 
         fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
         y_float = np.asarray(y, dtype=float)
+        med = np.median(y_float)
 
         # ---------- 1) Estimate noise σ on this window ----------
         sigma = estimate_noise_sigma_mad(y_float)
