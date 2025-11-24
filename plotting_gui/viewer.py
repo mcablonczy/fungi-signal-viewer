@@ -39,9 +39,7 @@ from PyQt5.QtCore import Qt, QTimer, QPointF, QEvent, QDateTime
 from PyQt5.QtGui import QFont
 
 from plotting_gui.peaks import (
-    estimate_noise_sigma_mad,
-    PeakThresholdConfig,
-    build_peak_find_kwargs,
+    estimate_noise_sigma_mad, PeakThresholdConfig, build_peak_find_kwargs, find_pos_neg_peaks
 )
 
 
@@ -1227,17 +1225,12 @@ class HDF5Viewer(QWidget):
     
         # ---------- Positive & negative peaks ----------
         try:
-            peaks_pos, _ = find_peaks(y_float, **kwargs)
-        except Exception:
+            peaks_pos, peaks_neg = find_pos_neg_peaks(y_float, kwargs)
+        except Exception as e:
+            print("[warn] find_peaks failed:", e)
             peaks_pos = np.array([], dtype=int)
-    
-        try:
-            peaks_neg, _ = find_peaks(-y_float, **kwargs)
-        except Exception:
             peaks_neg = np.array([], dtype=int)
-    
-        if peaks_pos.size == 0 and peaks_neg.size == 0:
-            return empty
+
     
         indices = np.concatenate([peaks_pos, peaks_neg])
         signs = np.concatenate([

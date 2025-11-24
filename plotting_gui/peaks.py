@@ -2,6 +2,7 @@
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict
+from scipy.signal import find_peaks
 
 @dataclass
 class PeakThresholdConfig:
@@ -92,3 +93,46 @@ def build_peak_find_kwargs(
             kwargs["width"] = width_samples
 
     return kwargs
+
+def find_pos_neg_peaks(
+    y: np.ndarray,
+    kwargs: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Run scipy.signal.find_peaks on both y and -y with the same kwargs.
+
+    Parameters
+    ----------
+    y : np.ndarray
+        1D signal.
+    kwargs : dict
+        Keyword arguments for scipy.signal.find_peaks, typically built
+        via build_peak_find_kwargs.
+
+    Returns
+    -------
+    peaks_pos : np.ndarray
+        Indices of positive-going peaks.
+    peaks_neg : np.ndarray
+        Indices of negative-going peaks.
+    """
+    y = np.asarray(y, dtype=float)
+
+    # These two lines are exactly what you already do in viewer.py
+    peaks_pos, _ = find_peaks(y, **kwargs)
+    peaks_neg, _ = find_peaks(-y, **kwargs)
+
+    return peaks_pos, peaks_neg
+
+
+
+
+
+
+
+
+
+
+
+
+
