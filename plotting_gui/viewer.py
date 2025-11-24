@@ -43,6 +43,9 @@ from plotting_gui.peaks import (
     APFeatures, extract_ap_features_for_peak, analyze_peaks_full
 )
 
+from plotting_gui.filters import apply_butterworth_filter
+
+
 
 # Your requested display order (trimmed, exact matches)
 PREFERRED_ORDER = [
@@ -2392,48 +2395,14 @@ class HDF5Viewer(QWidget):
         # ---------- Butterworth stage (if enabled) ----------
         if use_butter:
             fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
-            nyq = 0.5 * fs
-            f1 = max(0.0, float(self.filter_f1))
-            f2 = max(0.0, float(self.filter_f2))
-            order = max(1, int(self.filter_order))
-    
-            # filtfilt length sanity check only applies if we're actually filtering
-            if y.size < (order + 1) * 3:
-                # Too short for filtfilt → fall back to CM-only (and still allow MA below)
-                y = raw_cm
-            else:
-                try:
-                    if self.filter_type == "lowpass":
-                        if f2 <= 0 or f2 >= nyq:
-                            # invalid cutoff → skip Butterworth
-                            pass
-                        else:
-                            Wn = f2 / nyq
-                            sos = butter(order, Wn, btype="low", output="sos")
-                            y = sosfiltfilt(sos, y.astype(float))
-                    elif self.filter_type == "highpass":
-                        if f1 <= 0 or f1 >= nyq:
-                            pass
-                        else:
-                            Wn = f1 / nyq
-                            sos = butter(order, Wn, btype="high", output="sos")
-                            y = sosfiltfilt(sos, y.astype(float))
-                    else:  # "bandpass"
-                        lo = min(f1, f2)
-                        hi = max(f1, f2)
-                        if lo <= 0 or hi >= nyq or hi <= lo:
-                            pass
-                        else:
-                            Wn = (lo / nyq, hi / nyq)
-                            sos = butter(order, Wn, btype="band", output="sos")
-                            y = sosfiltfilt(sos, y.astype(float))
-    
-                except Exception:
-                    # If anything goes wrong, fall back to CM-only (and still allow MA below)
-                    y = raw_cm
-    
-        # Cast back to original dtype after Butterworth
-        y = y.astype(raw_cm.dtype, copy=False)
+            y = apply_butterworth_filter(
+                y=y,
+                fs=fs,
+                filter_type=self.filter_type,
+                f1=self.filter_f1,
+                f2=self.filter_f2,
+                order=self.filter_order,
+            )
     
         # ---------- Moving-average stage (if enabled) ----------
         if use_ma:
@@ -2442,6 +2411,7 @@ class HDF5Viewer(QWidget):
         # Cache final result (CM + Butterworth + MA)
         cache.put(key, y)
         return y
+
 
     def _update_peaks_for_channel(self, ch_idx: int, t: np.ndarray, y: np.ndarray, y_min: float, y_max: float):
         """Update vertical peak lines + stats for a single channel in the current window."""
