@@ -43,8 +43,9 @@ from plotting_gui.peaks import (
     APFeatures, extract_ap_features_for_peak, analyze_peaks_full
 )
 
-from plotting_gui.filters import apply_butterworth_filter
-
+from plotting_gui.filters import (
+    apply_butterworth_filter, apply_moving_average
+)
 
 
 # Your requested display order (trimmed, exact matches)
@@ -776,29 +777,6 @@ class HDF5Viewer(QWidget):
                 cache.clear()
     
         self._request_fetch()
-
-
-    def _apply_moving_average(self, y: np.ndarray) -> np.ndarray:
-        """
-        Apply a simple centered moving-average filter to 1D array y.
-
-        - Uses 'same' convolution so the length is preserved.
-        - Repeats the filter `ma_passes` times.
-        """
-        if not self.ma_enable:
-            return y
-
-        n = int(self.ma_points)
-        if n <= 1 or y.size == 0:
-            return y
-
-        kernel = np.ones(n, dtype=float) / float(n)
-        out = np.asarray(y, dtype=float)
-
-        for _ in range(max(1, int(self.ma_passes))):
-            out = np.convolve(out, kernel, mode="same")
-
-        return out
 
 
     def _build_peak_windows_dataframe(self, window_sec: float = 10.0) -> pd.DataFrame:
@@ -2406,7 +2384,11 @@ class HDF5Viewer(QWidget):
     
         # ---------- Moving-average stage (if enabled) ----------
         if use_ma:
-            y = self._apply_moving_average(y)
+            y = apply_moving_average(
+                y=y,
+                n_points=int(self.ma_points),
+                n_passes=int(self.ma_passes),
+            )
     
         # Cache final result (CM + Butterworth + MA)
         cache.put(key, y)

@@ -101,3 +101,34 @@ def apply_butterworth_filter(
         return y.astype(orig_dtype, copy=False)
 
     return np.asarray(out, dtype=orig_dtype)
+
+def apply_moving_average(
+    y: np.ndarray,
+    n_points: int,
+    n_passes: int = 1,
+) -> np.ndarray:
+    """
+    Apply a simple centered moving-average filter to a 1D array.
+
+    - Uses 'same' convolution so the length is preserved.
+    - Repeats the filter `n_passes` times.
+    - Mirrors the behavior of the previous _apply_moving_average method
+      (returns a float array).
+    """
+    y = np.asarray(y)
+
+    if y.size == 0:
+        return y
+
+    n = int(n_points)
+    if n <= 1:
+        return y
+
+    kernel = np.ones(n, dtype=float) / float(n)
+    out = np.asarray(y, dtype=float)
+
+    passes = max(1, int(n_passes))
+    for _ in range(passes):
+        out = np.convolve(out, kernel, mode="same")
+
+    return out
