@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# IDE stuff
+.vscode/
+.idea/
+*.code-workspace
+
+# Data files
+*.h5
+*.hdf5
+*.dat
+*.csv
+
+# OS cruft
+.DS_Store
+Thumbs.db
