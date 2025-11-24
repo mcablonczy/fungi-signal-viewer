@@ -152,6 +152,59 @@ def apply_common_mode(raw: np.ndarray, ref: np.ndarray) -> np.ndarray:
         # Fallback: do subtraction in float space
         return raw.astype(float) - ref.astype(float)
 
+def apply_filter_pipeline(
+    raw: np.ndarray,
+    fs: float,
+    cm_enabled: bool,
+    cm_ref: np.ndarray | None,
+    butter_enabled: bool,
+    filter_type: str,
+    f1: float,
+    f2: float,
+    order: int,
+    ma_enabled: bool,
+    ma_points: int,
+    ma_passes: int,
+) -> np.ndarray:
+    """
+    Apply the full filter chain to a 1D signal:
 
+    1) Optional common-mode subtraction (raw - cm_ref).
+    2) Optional Butterworth filter.
+    3) Optional moving-average smoothing.
+
+    This mirrors the behavior of the viewer's _get_filtered_segment logic,
+    but without any GUI state or caching.
+    """
+    y = np.asarray(raw)
+
+    # --- Common-mode ---
+    if cm_enabled and cm_ref is not None:
+        if cm_ref.shape == y.shape:
+            y = apply_common_mode(y, cm_ref)
+        else:
+            # Shape mismatch → skip CM (same as implicitly doing nothing)
+            pass
+
+    # --- Butterworth ---
+    if butter_enabled:
+        y = apply_butterworth_filter(
+            y=y,
+            fs=fs,
+            filter_type=filter_type,
+            f1=f1,
+            f2=f2,
+            order=order,
+        )
+
+    # --- Moving average ---
+    if ma_enabled:
+        y = apply_moving_average(
+            y=y,
+            n_points=ma_points,
+            n_passes=ma_passes,
+        )
+
+    return y
 
 

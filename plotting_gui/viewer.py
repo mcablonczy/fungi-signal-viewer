@@ -45,6 +45,7 @@ from plotting_gui.peaks import (
 
 from plotting_gui.filters import (
     apply_butterworth_filter, apply_moving_average, apply_common_mode,
+    apply_filter_pipeline,
 )
 
 
@@ -2333,64 +2334,71 @@ class HDF5Viewer(QWidget):
         return apply_common_mode(raw, ref)
 
 
-
     def _get_filtered_segment(self, ch_idx: int, sa: int, sb: int):
         """
         Return data segment for channel ch_idx in [sa:sb),
         applying:
-            1) common-mode removal
+            1) optional common-mode removal
             2) optional Butterworth filter
             3) optional moving-average filter
-        """
-        # Always start from common-mode corrected segment
-        raw_cm = self._get_common_mode_segment(ch_idx, sa, sb)
     
+        Uses a per-channel LRU cache keyed by (sa, sb, filter_signature).
+        """
+        # Always start from the raw segment
+        raw = self._get_segment(ch_idx, sa, sb)
+    
+        # Flags from GUI state
         use_butter = bool(getattr(self, "filter_enabled", False))
         use_ma = bool(getattr(self, "ma_enable", False))
+        cm_enabled = bool(getattr(self, "cm_enabled", False))
     
-        # If no filters at all, just return CM-only data
-        if not use_butter and not use_ma:
-            return raw_cm
+        # Determine CM reference segment (if valid)
+        cm_ref = None
+        if cm_enabled and self.cm_ref_index is not None:
+            if 0 <= self.cm_ref_index < self.n_channels:
+                cm_ref = self._get_segment(self.cm_ref_index, sa, sb)
+            else:
+                # Invalid ref index → disable CM
+                cm_enabled = False
     
-        # Per-channel filter cache (for Butterworth + MA combined)
+        # If no filters at all, just return the raw signal (no CM, no Butterworth, no MA)
+        if not cm_enabled and not use_butter and not use_ma:
+            return raw
+    
+        # Per-channel filter cache (for CM + Butterworth + MA combined)
         cache = self._filter_caches.get(ch_idx)
         if cache is None:
             cache = _LRUCache(max_segments=12)
             self._filter_caches[ch_idx] = cache
     
-        # IMPORTANT: _filter_signature() should include both Butterworth and MA params
+        # IMPORTANT: _filter_signature() should include butter + MA params;
+        # CM is per-channel and per-ref handled via ch_idx and cm_ref_index.
         sig = self._filter_signature()
         key = (sa, sb, sig)
         arr = cache.get(key)
         if arr is not None:
             return arr
     
-        y = raw_cm
+        fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
     
-        # ---------- Butterworth stage (if enabled) ----------
-        if use_butter:
-            fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
-            y = apply_butterworth_filter(
-                y=y,
-                fs=fs,
-                filter_type=self.filter_type,
-                f1=self.filter_f1,
-                f2=self.filter_f2,
-                order=self.filter_order,
-            )
-    
-        # ---------- Moving-average stage (if enabled) ----------
-        if use_ma:
-            y = apply_moving_average(
-                y=y,
-                n_points=int(self.ma_points),
-                n_passes=int(self.ma_passes),
-            )
+        y = apply_filter_pipeline(
+            raw=raw,
+            fs=fs,
+            cm_enabled=cm_enabled,
+            cm_ref=cm_ref,
+            butter_enabled=use_butter,
+            filter_type=self.filter_type,
+            f1=float(self.filter_f1),
+            f2=float(self.filter_f2),
+            order=int(self.filter_order),
+            ma_enabled=use_ma,
+            ma_points=int(self.ma_points),
+            ma_passes=int(self.ma_passes),
+        )
     
         # Cache final result (CM + Butterworth + MA)
         cache.put(key, y)
         return y
-
 
     def _update_peaks_for_channel(self, ch_idx: int, t: np.ndarray, y: np.ndarray, y_min: float, y_max: float):
         """Update vertical peak lines + stats for a single channel in the current window."""
