@@ -44,7 +44,7 @@ from plotting_gui.peaks import (
 )
 
 from plotting_gui.filters import (
-    apply_butterworth_filter, apply_moving_average
+    apply_butterworth_filter, apply_moving_average, apply_common_mode,
 )
 
 
@@ -2316,25 +2316,22 @@ class HDF5Viewer(QWidget):
         after optional common-mode subtraction.
         """
         raw = self._get_segment(ch_idx, sa, sb)
-
+    
         # If CM is disabled or ref channel invalid, just return raw
-        if not self.cm_enabled or self.cm_ref_index is None:
+        if not getattr(self, "cm_enabled", False) or self.cm_ref_index is None:
             return raw
-
+    
         # Make sure indices are sane
         if self.cm_ref_index < 0 or self.cm_ref_index >= self.n_channels:
             return raw
-
+    
         # Reference segment
         ref = self._get_segment(self.cm_ref_index, sa, sb)
-
+    
         # Subtract reference (reference channel will go near-zero itself)
         # The subtraction creates a new array; cached raw arrays are not modified.
-        try:
-            return raw - ref
-        except Exception:
-            # In case of dtype weirdness, fallback to float
-            return raw.astype(float) - ref.astype(float)
+        return apply_common_mode(raw, ref)
+
 
 
     def _get_filtered_segment(self, ch_idx: int, sa: int, sb: int):

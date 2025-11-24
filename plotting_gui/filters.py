@@ -132,3 +132,26 @@ def apply_moving_average(
         out = np.convolve(out, kernel, mode="same")
 
     return out
+
+def apply_common_mode(raw: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """
+    Subtract a reference (common-mode) signal from a raw signal.
+
+    Mirrors the behavior of _get_common_mode_segment's subtraction:
+
+    - raw and ref are 1D arrays of the same length.
+    - Returns raw - ref when possible.
+    - If dtype issues occur, falls back to float subtraction.
+    """
+    raw = np.asarray(raw)
+    ref = np.asarray(ref)
+
+    try:
+        return raw - ref
+    except Exception:
+        # Fallback: do subtraction in float space
+        return raw.astype(float) - ref.astype(float)
+
+
+
+
