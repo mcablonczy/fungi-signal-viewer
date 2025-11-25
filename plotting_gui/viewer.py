@@ -15,17 +15,12 @@ import math
 import csv
 import pandas as pd
 
-
-
-
 from collections import OrderedDict
 
 from scipy.signal import butter, sosfiltfilt, find_peaks, peak_prominences
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 from datetime import datetime, timedelta
-
-
 
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
@@ -38,6 +33,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QTimer, QPointF, QEvent, QDateTime
 from PyQt5.QtGui import QFont
 
+
 from plotting_gui.peaks import (
     estimate_noise_sigma_mad, PeakThresholdConfig, build_peak_find_kwargs, find_pos_neg_peaks,
     APFeatures, extract_ap_features_for_peak, analyze_peaks_full
@@ -47,6 +43,13 @@ from plotting_gui.filters import (
     apply_butterworth_filter, apply_moving_average, apply_common_mode,
     apply_filter_pipeline,
 )
+
+from plotting_gui.signal_io import (HDF5SignalSource,
+)
+
+from plotting_gui.plotting.colors import build_channel_color_map
+
+from plotting_gui.plotting.curves import create_channel_curve, create_peak_overlay
 
 
 # Your requested display order (trimmed, exact matches)
@@ -108,15 +111,6 @@ def nice_125(value: float) -> float:
 
     return base * (10 ** mag)
 
-
-def get_viridis_colors(n):
-    """Return n distinct colors from the viridis colormap as (r,g,b) tuples 0–255."""
-    cmap = cm.get_cmap("viridis", n)
-    colors = []
-    for i in range(n):
-        r, g, b, _ = cmap(i)
-        colors.append((int(r*255), int(g*255), int(b*255)))
-    return colors
     
 def _format_no_sci(value: float, sig: int = 2) -> str:
     """Format with `sig` significant digits and NO scientific notation."""
@@ -1583,12 +1577,9 @@ class HDF5Viewer(QWidget):
         self.file_label.setText("Loading file… please wait")
         QApplication.processEvents()
 
-        if self.h5file is not None:
-            try:
-                self.h5file.close()
-            except Exception:
-                pass
-            self.h5file = None
+        if getattr(self, "signal_source", None) is not None:
+            self.signal_source.close()
+            self.signal_source = None
 
         try:
             self.h5file = h5py.File(file_path, "r")
@@ -1749,16 +1740,12 @@ class HDF5Viewer(QWidget):
     
         self.selected_channels.clear()
     
-        # Colors & caches (unchanged)
-        # Use viridis colormap for channel colors
-        viridis_colors = get_viridis_colors(len(self.channel_names))
-        self.colors = {
-            name: viridis_colors[i]
-            for i, name in enumerate(self.channel_names)
-        }
-
+        # Colors & caches
+        self.colors = build_channel_color_map(self.channel_names)
+        
         self._caches = {i: _LRUCache(max_segments=12) for i in range(len(self.channel_names))}
         self._filter_caches = {i: _LRUCache(max_segments=12) for i in range(len(self.channel_names))}  # <-- NEW
+
 
     
         # Create checkboxes in display order; stash raw index on the widget
@@ -2053,19 +2040,14 @@ class HDF5Viewer(QWidget):
         self._name_labels[ch_idx] = name_lbl
 
         # Curve
-        curve = pw.plot([], [], pen=pg.mkPen(self.colors[ch_name], width=1))
-        try:
-            curve.setClipToView(True)
-            curve.setDownsampling(auto=True, mode='peak')
-            curve.setSkipFiniteCheck(True)
-        except Exception:
-            pass
+        color = self.colors.get(ch_name, (200, 200, 200))
+        curve = create_channel_curve(pw, color)
         self._curves[ch_idx] = curve
 
-        # NEW: peak vertical lines overlay for this channel
-        peak_item = pw.plot([], [], pen=pg.mkPen(150, 150, 255, 160, width=1))
-        peak_item.setZValue(curve.zValue() - 1)  # slightly behind the main curve if you prefer
+        # Peak vertical lines overlay for this channel
+        peak_item = create_peak_overlay(pw, base_curve_z=curve.zValue())
         self._peak_items[ch_idx] = peak_item
+
 
 
         # Mouse move -> cursor readout + scale bars
@@ -2298,18 +2280,29 @@ class HDF5Viewer(QWidget):
         return sa, sb
 
     def _get_segment(self, ch_idx: int, sa: int, sb: int):
+        """
+        Return raw data segment [sa:sb) for channel ch_idx from the HDF5 dataset.
+    
+        Uses a small per-channel LRU cache to avoid re-reading the same slices.
+        """
         cache = self._caches.get(ch_idx)
         if cache is None:
             cache = _LRUCache()
             self._caches[ch_idx] = cache
+    
         key = (sa, sb)
         arr = cache.get(key)
         if arr is not None:
             return arr
+    
+        # Original layout: self.data has shape (channels, samples)
         arr = self.data[ch_idx, sa:sb]
         arr = np.asarray(arr)
+    
         cache.put(key, arr)
         return arr
+
+
 
     def _get_common_mode_segment(self, ch_idx: int, sa: int, sb: int):
         """
