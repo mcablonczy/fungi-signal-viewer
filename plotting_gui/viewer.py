@@ -51,6 +51,18 @@ from plotting_gui.plotting.colors import build_channel_color_map
 
 from plotting_gui.plotting.curves import create_channel_curve, create_peak_overlay
 
+from plotting_gui.plotting.peaks_overlay import set_peak_vertical_lines
+
+from plotting_gui.ui.panels import (
+    build_left_panel, build_right_tabs, build_main_layout,
+)
+
+from plotting_gui.peak_io import (
+    save_peaks_csv_with_metadata,
+    save_peak_windows_csv, save_peak_stats_long_csv,
+)
+
+
 
 # Your requested display order (trimmed, exact matches)
 PREFERRED_ORDER = [
@@ -372,361 +384,10 @@ class HDF5Viewer(QWidget):
 
         self.init_ui()
 
-    # -------------------------- UI SETUP --------------------------
-
     def init_ui(self):
-        layout = QHBoxLayout(self)
-        
-        # === LEFT: File label + [channel panel | plots] + time labels + cursor ===
-        left_layout = QVBoxLayout()
-        
-        # Top: file label
-        self.file_label = QLabel("No file loaded")
-        left_layout.addWidget(self.file_label)
-        
-        # Middle row: [channel scroll panel] | [plot grid scroll]
-        mid_row = QHBoxLayout()
-        
-        # --- Channel checkbox scroll panel (moved from right side) ---
-        self.checkbox_group = QVBoxLayout()
-        self.checkbox_widget = QtWidget()
-        self.checkbox_widget.setLayout(self.checkbox_group)
-        
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setWidget(self.checkbox_widget)
-        self.scroll_area.setMinimumWidth(90)
-        self.scroll_area.setMaximumWidth(140)
-        
-        mid_row.addWidget(self.scroll_area, stretch=0)
-        
-        # --- Plot area: scrollable grid of subplots (2 columns) ---
-        self.grid_widget = QtWidget()
-        self.grid_layout = QGridLayout(self.grid_widget)
-        self.grid_layout.setContentsMargins(0, 0, 0, 0)
-        self.grid_layout.setHorizontalSpacing(4)
-        self.grid_layout.setVerticalSpacing(4)
-        self.grid_layout.setColumnStretch(0, 1)
-        self.grid_layout.setColumnStretch(1, 1)
-        
-        self.plot_scroll_area = QScrollArea()
-        self.plot_scroll_area.setWidgetResizable(True)
-        self.plot_scroll_area.setWidget(self.grid_widget)
-        self.plot_scroll_area.setMinimumHeight(100)
-        self.plot_scroll_area.setMaximumHeight(1200)
-        
-        mid_row.addWidget(self.plot_scroll_area, stretch=1)
-        
-        left_layout.addLayout(mid_row)
-        
-        # Bottom: absolute time range labels
-        time_label_layout = QHBoxLayout()
-        self.time_start_label = QLabel("Start: 0.00 s")
-        self.time_end_label = QLabel("End: 0.00 s")
-        f = QFont("Arial", 10)
-        self.time_start_label.setFont(f)
-        self.time_end_label.setFont(f)
-        time_label_layout.addWidget(self.time_start_label)
-        time_label_layout.addStretch()
-        time_label_layout.addWidget(self.time_end_label)
-        left_layout.addLayout(time_label_layout)
-        
-        # Cursor readout (bottom)
-        self.cursor_label = QLabel("Cursor — t: –, y: –")
-        self.cursor_label.setFont(QFont("Arial", 10))
-        
-        layout.addLayout(left_layout, stretch=5)
-    
-        # === RIGHT: Controls (will go inside Tab "Controls") ===
-        control_layout = QVBoxLayout()
-        
-        self.load_button = QPushButton("Load File")
-        self.load_button.clicked.connect(self.load_file)
-        self.load_button.setMinimumWidth(110)
-        control_layout.addWidget(self.load_button)
-        
-        self.select_all_checkbox = QCheckBox("Select All")
-        self.select_all_checkbox.stateChanged.connect(self.toggle_select_all)
-        control_layout.addWidget(self.select_all_checkbox)
-        
-        self.unselect_all_button = QPushButton("Unselect All")
-        self.unselect_all_button.clicked.connect(self.unselect_all)
-        control_layout.addWidget(self.unselect_all_button)
-        
-        # --- Real-time window selectors (dd/mm/yy hh:mm:ss) ---
-        self.win_start_label = QLabel("Window start (dd/mm/yy hh:mm:ss):")
-        self.win_start_dtedit = QDateTimeEdit()
-        self.win_start_dtedit.setDisplayFormat("dd/MM/yy HH:mm:ss")
-        self.win_start_dtedit.setCalendarPopup(True)
-    
-        self.win_end_label = QLabel("Window end (dd/mm/yy hh:mm:ss):")
-        self.win_end_dtedit = QDateTimeEdit()
-        self.win_end_dtedit.setDisplayFormat("dd/MM/yy HH:mm:ss")
-        self.win_end_dtedit.setCalendarPopup(True)
-    
-        self.win_apply_button = QPushButton("Go to window")
-        self.win_apply_button.clicked.connect(self._on_apply_window_times)
-    
-        control_layout.addWidget(self.win_start_label)
-        control_layout.addWidget(self.win_start_dtedit)
-        control_layout.addWidget(self.win_end_label)
-        control_layout.addWidget(self.win_end_dtedit)
-        control_layout.addWidget(self.win_apply_button)
-    
-        # Plot derivative instead of raw/filtered signal  (only ONCE)
-        self.derivative_checkbox = QCheckBox("Plot derivative instead of signal")
-        self.derivative_checkbox.stateChanged.connect(self._on_derivative_toggled)
-        control_layout.addWidget(self.derivative_checkbox)
-    
-        # ---------- Common-mode removal controls ----------
-        cm_title = QLabel("Common-mode removal")
-        cm_title.setStyleSheet("font-weight: bold;")
-        control_layout.addWidget(cm_title)
-        
-        self.cm_enable_checkbox = QCheckBox("Enable common-mode")
-        self.cm_enable_checkbox.stateChanged.connect(self._on_cm_params_changed)
-        control_layout.addWidget(self.cm_enable_checkbox)
-        
-        cm_row = QHBoxLayout()
-        cm_row.addWidget(QLabel("Reference:"))
-        self.cm_ref_combo = QComboBox()
-        self.cm_ref_combo.currentIndexChanged.connect(self._on_cm_params_changed)
-        self.cm_ref_combo.setEnabled(False)  # enabled once file is loaded
-        cm_row.addWidget(self.cm_ref_combo)
-        cm_row.addStretch()
-        control_layout.addLayout(cm_row)
-        # ---------- end common-mode controls ----------
-    
-        # ---------- Butterworth filter controls ----------
-        filter_title = QLabel("Butterworth filter")
-        filter_title.setStyleSheet("font-weight: bold;")
-        control_layout.addWidget(filter_title)
-    
-        self.filter_enable_checkbox = QCheckBox("Enable filter")
-        self.filter_enable_checkbox.stateChanged.connect(self._on_filter_params_changed)
-        control_layout.addWidget(self.filter_enable_checkbox)
-    
-        type_row = QHBoxLayout()
-        type_row.addWidget(QLabel("Type:"))
-        self.filter_type_combo = QComboBox()
-        self.filter_type_combo.addItems(["Lowpass", "Highpass", "Bandpass"])
-        self.filter_type_combo.currentIndexChanged.connect(self._on_filter_type_changed)
-        type_row.addWidget(self.filter_type_combo)
-        type_row.addStretch()
-        control_layout.addLayout(type_row)
-    
-        f1_row = QHBoxLayout()
-        f1_row.addWidget(QLabel("f1 (Hz):"))
-        self.filter_f1_spin = QDoubleSpinBox()
-        self.filter_f1_spin.setRange(0.001, 1e5)
-        self.filter_f1_spin.setDecimals(3)
-        self.filter_f1_spin.setSingleStep(0.1)
-        self.filter_f1_spin.setValue(self.filter_f1)
-        self.filter_f1_spin.valueChanged.connect(self._on_filter_params_changed)
-        f1_row.addWidget(self.filter_f1_spin)
-        control_layout.addLayout(f1_row)
-    
-        f2_row = QHBoxLayout()
-        f2_row.addWidget(QLabel("f2 (Hz):"))
-        self.filter_f2_spin = QDoubleSpinBox()
-        self.filter_f2_spin.setRange(0.001, 1e5)
-        self.filter_f2_spin.setDecimals(3)
-        self.filter_f2_spin.setSingleStep(0.5)
-        self.filter_f2_spin.setValue(self.filter_f2)
-        self.filter_f2_spin.valueChanged.connect(self._on_filter_params_changed)
-        f2_row.addWidget(self.filter_f2_spin)
-        control_layout.addLayout(f2_row)
-    
-        order_row = QHBoxLayout()
-        order_row.addWidget(QLabel("Order:"))
-        self.filter_order_spin = QSpinBox()
-        self.filter_order_spin.setRange(1, 10)
-        self.filter_order_spin.setValue(self.filter_order)
-        self.filter_order_spin.valueChanged.connect(self._on_filter_params_changed)
-        order_row.addWidget(self.filter_order_spin)
-        order_row.addStretch()
-        control_layout.addLayout(order_row)
-    
-        self._update_filter_widget_states()
-        # ---------- end Butterworth controls ----------
-
-        # ---------- Moving average filter controls ----------
-        ma_title = QLabel("Moving average filter")
-        ma_title.setStyleSheet("font-weight: bold;")
-        control_layout.addWidget(ma_title)
-    
-        # Enable MA filter
-        self.ma_enable_checkbox = QCheckBox("Enable moving average")
-        self.ma_enable_checkbox.stateChanged.connect(self._on_ma_params_changed)
-        control_layout.addWidget(self.ma_enable_checkbox)
-    
-        # Number of points
-        ma_points_row = QHBoxLayout()
-        ma_points_row.addWidget(QLabel("Points:"))
-        self.ma_points_spin = QSpinBox()
-        self.ma_points_spin.setRange(1, 10000)       # sensible limit
-        self.ma_points_spin.setValue(self.ma_points) # default from __init__
-        self.ma_points_spin.valueChanged.connect(self._on_ma_params_changed)
-        ma_points_row.addWidget(self.ma_points_spin)
-        ma_points_row.addStretch()
-        control_layout.addLayout(ma_points_row)
-    
-        # Number of passes
-        ma_passes_row = QHBoxLayout()
-        ma_passes_row.addWidget(QLabel("Passes:"))
-        self.ma_passes_spin = QSpinBox()
-        self.ma_passes_spin.setRange(1, 10)
-        self.ma_passes_spin.setValue(self.ma_passes)
-        self.ma_passes_spin.valueChanged.connect(self._on_ma_params_changed)
-        ma_passes_row.addWidget(self.ma_passes_spin)
-        ma_passes_row.addStretch()
-        control_layout.addLayout(ma_passes_row)
-        # ---------- end Moving average filter controls ----------
-
-
-        # ---------- Peak detection controls ----------
-        peaks_title = QLabel("Peak detection")
-        peaks_title.setStyleSheet("font-weight: bold;")
-        control_layout.addWidget(peaks_title)
-        
-        self.peaks_enable_checkbox = QCheckBox("Enable peak detection")
-        self.peaks_enable_checkbox.stateChanged.connect(self._on_peaks_params_changed)
-        control_layout.addWidget(self.peaks_enable_checkbox)
-        
-        self.peaks_use_relative_checkbox = QCheckBox("Use noise-based thresholds (k × σ)")
-        self.peaks_use_relative_checkbox.setChecked(True)
-        self.peaks_use_relative_checkbox.stateChanged.connect(self._on_peaks_params_changed)
-        control_layout.addWidget(self.peaks_use_relative_checkbox)
-        
-        kprom_row = QHBoxLayout()
-        kprom_row.addWidget(QLabel("k_prom (×σ):"))
-        self.peaks_k_prom_spin = QDoubleSpinBox()
-        self.peaks_k_prom_spin.setRange(0.0, 1e3)
-        self.peaks_k_prom_spin.setDecimals(2)
-        self.peaks_k_prom_spin.setSingleStep(0.5)
-        self.peaks_k_prom_spin.setValue(self.peaks_k_prom)
-        self.peaks_k_prom_spin.valueChanged.connect(self._on_peaks_params_changed)
-        kprom_row.addWidget(self.peaks_k_prom_spin)
-        control_layout.addLayout(kprom_row)
-        
-        kheight_row = QHBoxLayout()
-        kheight_row.addWidget(QLabel("k_height (×σ):"))
-        self.peaks_k_height_spin = QDoubleSpinBox()
-        self.peaks_k_height_spin.setRange(0.0, 1e3)
-        self.peaks_k_height_spin.setDecimals(2)
-        self.peaks_k_height_spin.setSingleStep(0.5)
-        self.peaks_k_height_spin.setValue(self.peaks_k_height)
-        self.peaks_k_height_spin.valueChanged.connect(self._on_peaks_params_changed)
-        kheight_row.addWidget(self.peaks_k_height_spin)
-        control_layout.addLayout(kheight_row)
-        
-        prom_row = QHBoxLayout()
-        prom_row.addWidget(QLabel("Prominence (abs units):"))
-        self.peaks_prominence_spin = QDoubleSpinBox()
-        self.peaks_prominence_spin.setRange(0.0, 1e9)
-        self.peaks_prominence_spin.setDecimals(6)
-        self.peaks_prominence_spin.setSingleStep(0.1)
-        self.peaks_prominence_spin.setValue(50.0)
-        self.peaks_prominence_spin.valueChanged.connect(self._on_peaks_params_changed)
-        prom_row.addWidget(self.peaks_prominence_spin)
-        control_layout.addLayout(prom_row)
-        
-        height_row = QHBoxLayout()
-        height_row.addWidget(QLabel("Min height (abs units):"))
-        self.peaks_height_abs_spin = QDoubleSpinBox()
-        self.peaks_height_abs_spin.setRange(0.0, 1e9)
-        self.peaks_height_abs_spin.setDecimals(6)
-        self.peaks_height_abs_spin.setSingleStep(0.1)
-        self.peaks_height_abs_spin.setValue(50.0)
-        self.peaks_height_abs_spin.valueChanged.connect(self._on_peaks_params_changed)
-        height_row.addWidget(self.peaks_height_abs_spin)
-        control_layout.addLayout(height_row)
-    
-        dist_row = QHBoxLayout()
-        dist_row.addWidget(QLabel("Min distance (s):"))
-        self.peaks_min_dist_spin = QDoubleSpinBox()
-        self.peaks_min_dist_spin.setRange(0.0, 1e6)
-        self.peaks_min_dist_spin.setDecimals(3)
-        self.peaks_min_dist_spin.setSingleStep(0.1)
-        self.peaks_min_dist_spin.setValue(0.0)
-        self.peaks_min_dist_spin.valueChanged.connect(self._on_peaks_params_changed)
-        dist_row.addWidget(self.peaks_min_dist_spin)
-        control_layout.addLayout(dist_row)
-    
-        width_row = QHBoxLayout()
-        width_row.addWidget(QLabel("Min width (s):"))
-        self.peaks_min_width_spin = QDoubleSpinBox()
-        self.peaks_min_width_spin.setRange(0.0, 1e6)
-        self.peaks_min_width_spin.setDecimals(3)
-        self.peaks_min_width_spin.setSingleStep(0.1)
-        self.peaks_min_width_spin.setValue(0.0)
-        self.peaks_min_width_spin.valueChanged.connect(self._on_peaks_params_changed)
-        width_row.addWidget(self.peaks_min_width_spin)
-        control_layout.addLayout(width_row)
-        
-        bip_row = QHBoxLayout()
-        bip_row.addWidget(QLabel("Biphasic merge (s):"))
-        self.peaks_biphasic_window_spin = QDoubleSpinBox()
-        self.peaks_biphasic_window_spin.setRange(0.0, 1e6)
-        self.peaks_biphasic_window_spin.setDecimals(3)
-        self.peaks_biphasic_window_spin.setSingleStep(0.05)
-        self.peaks_biphasic_window_spin.setValue(self.peaks_biphasic_window_s)
-        self.peaks_biphasic_window_spin.valueChanged.connect(self._on_peaks_params_changed)
-        bip_row.addWidget(self.peaks_biphasic_window_spin)
-        control_layout.addLayout(bip_row)
-        
-        self._update_peaks_widget_states()
-        # ---------- end Peak detection controls ----------
-    
-        # Wrap controls in a widget for Tab 1
-        controls_widget = QtWidget()
-        controls_widget.setLayout(control_layout)
-    
-        # --- Peak stats tab ---
-        self.stats_table = QTableWidget()
-        self.stats_table.setColumnCount(7)
-        self.stats_table.setHorizontalHeaderLabels([
-            "Channel", "Count", "Mean amp", "Median amp",
-            "Mean dur (s)", "Median dur (s)", "Freq (peaks/min)"
-        ])
-        self.stats_table.horizontalHeader().setStretchLastSection(True)
-        self.stats_table.verticalHeader().setVisible(False)
-        self.stats_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.stats_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.stats_table.setSelectionMode(QTableWidget.SingleSelection)
-
-        stats_layout = QVBoxLayout()
-        
-        self.classify_button = QPushButton("Classify peaks")
-        self.classify_button.clicked.connect(self._on_classify_peaks_clicked)
-        stats_layout.addWidget(self.classify_button)
-        
-        self.extract_windows_button = QPushButton("Extract 4s peak windows")
-        self.extract_windows_button.clicked.connect(self._on_extract_peak_windows_clicked)
-        stats_layout.addWidget(self.extract_windows_button)
-        
-        # NEW: Save peaks button
-        self.save_peaks_button = QPushButton("Save peaks")
-        self.save_peaks_button.clicked.connect(self._on_save_peaks_clicked)
-        stats_layout.addWidget(self.save_peaks_button)
-        
-        stats_layout.addWidget(self.stats_table)
-
-           
-        stats_widget = QtWidget()
-        stats_widget.setLayout(stats_layout)
-        
-        self.tabs = QTabWidget()
-        self.tabs.addTab(controls_widget, "Controls")
-        self.tabs.addTab(stats_widget, "Peak stats")
-    
-        layout.addWidget(self.tabs, stretch=0)
-        
-        # ★ NEW: shrink the right-side interface
-        self.tabs.setMinimumWidth(270)
-        self.tabs.setMaximumWidth(270)   # adjust as needed
-        
-        layout.addWidget(self.tabs, stretch=0)
+        # Use the modular builder
+        layout = build_main_layout(self)
+        self.setLayout(layout)
     
         try:
             pg.setConfigOptions(antialias=True)
@@ -738,28 +399,31 @@ class HDF5Viewer(QWidget):
             return
         if not self.selected_channels:
             return
-
+    
         # Choose output file
         start_dir = os.path.dirname(self.file_name) if self.file_name else ""
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Save 10s Peak Windows CSV",
+            "Save 10s Peak Windows CSV",  # keep existing label / filename
             os.path.join(start_dir, "peak_windows_10s.csv"),
             "CSV Files (*.csv)"
         )
         if not file_path:
             return
-
+    
+        # Build long-format windows DataFrame
         df = self._build_peak_windows_dataframe(window_sec=4.0)
         if df is None or df.empty:
             print("[info] No peaks to export in current view.")
             return
-
+    
         self.peak_windows_df = df
+    
         try:
-            df.to_csv(file_path, index=False)
+            save_peak_windows_csv(file_path, df)
         except Exception as e:
             print(f"[warn] Failed to save peak windows CSV: {e}")
+
 
     def _on_ma_params_changed(self, *args, **kwargs):
         self.ma_enable = self.ma_enable_checkbox.isChecked()
@@ -938,7 +602,7 @@ class HDF5Viewer(QWidget):
                 local_idx = int(peak_idx[k])
         
                 # --- AP features for this peak ---
-                ap = extract_ap_features_for_peak(y, peak_idx, fs)
+                ap = extract_ap_features_for_peak(y, local_idx, fs)
         
                 # global sample index for the peak
                 g_peak = sa + local_idx
@@ -1103,100 +767,15 @@ class HDF5Viewer(QWidget):
             print("[info] No peaks found in current window.")
             return
     
-        # Derive metadata file path: same base name + "_metadata"
-        root, ext = os.path.splitext(file_path)
-        if not ext:
-            ext = ".csv"
-        meta_path = root + "_metadata" + ext
-    
-        # ------------------ 1) PEAKS CSV ------------------
-        peaks_header = [
-            "channel",
-            "peak_amplitude",
-            "start_time_str",
-            "peak_time_str",
-            "end_time_str",
-            "duration_full_s",
-            "pwhm_s",
-            "pwhm_freq_hz",
-            "dep_to_hyp_start_s",
-            "hyp_duration_s",
-            "rise_time_s",
-            "decay_time_s",
-            "hyp_amplitude",
-            "net_area",
-            "peak_area",
-            "hyp_area",
-            "spike_energy",
-        ]
-    
-        try:
-            with open(file_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(peaks_header)
-    
-                for row in rows:
-                    amp = float(row["peak_amplitude"])
-                    dur = float(row["duration_full_s"])
-                    pwhm = float(row["pwhm_s"])
-                    freq = float(row["pwhm_freq_hz"])
-    
-                    writer.writerow([
-                        row["channel"],
-                        f"{float(row['peak_amplitude']):.1f}",
-                        row["start_time_str"],
-                        row["peak_time_str"],
-                        row["end_time_str"],
-                        f"{float(row['duration_full_s']):.1f}",
-                        f"{float(row['pwhm_s']):.1f}",
-                        f"{float(row['pwhm_freq_hz']):.2f}",
-                        f"{float(row['dep_to_hyp_start_s']):.1f}" if np.isfinite(row["dep_to_hyp_start_s"]) else "",
-                        f"{float(row['hyp_duration_s']):.1f}" if np.isfinite(row["hyp_duration_s"]) else "",
-                        f"{float(row['rise_time_s']):.1f}" if np.isfinite(row["rise_time_s"]) else "",
-                        f"{float(row['decay_time_s']):.1f}" if np.isfinite(row["decay_time_s"]) else "",
-                        f"{float(row['hyp_amplitude']):.1f}" if np.isfinite(row["hyp_amplitude"]) else "",
-                        f"{float(row['net_area']):.3e}" if np.isfinite(row["net_area"]) else "",
-                        f"{float(row['peak_area']):.3e}" if np.isfinite(row["peak_area"]) else "",
-                        f"{float(row['hyp_area']):.3e}" if np.isfinite(row["hyp_area"]) else "",
-                        f"{float(row['spike_energy']):.3e}" if np.isfinite(row["spike_energy"]) else "",
-                    ])
-
-        except Exception as e:
-            print(f"[warn] Failed to save peaks CSV: {e}")
-            return
-    
-        # ------------------ 2) METADATA CSV ------------------
+        # Snapshot current settings (CM/filter/MA/peaks)
         settings = self._current_peak_settings_snapshot()
     
-        meta_cols = [
-            "cm_enabled",
-            "cm_reference_channel",
-            "butter_enabled",
-            "butter_type",
-            "butter_f1_Hz",
-            "butter_f2_Hz",
-            "butter_order",
-            "ma_enabled",
-            "ma_points",
-            "ma_passes",
-            "peaks_use_relative",
-            "peaks_k_prom",
-            "peaks_k_height",
-            "peaks_prom_abs",
-            "peaks_height_abs",
-            "peaks_min_dist_s",
-            "peaks_min_width_s",
-            "peaks_biphasic_window_s",
-            "show_derivative_for_display",
-        ]
-    
+        # Delegate all CSV I/O to peak_io
         try:
-            with open(meta_path, "w", newline="", encoding="utf-8") as fmeta:
-                writer = csv.writer(fmeta)
-                writer.writerow(meta_cols)
-                writer.writerow([settings.get(k, "") for k in meta_cols])
+            save_peaks_csv_with_metadata(file_path, rows, settings)
         except Exception as e:
-            print(f"[warn] Failed to save metadata CSV: {e}")
+            print(f"[warn] Failed to save peaks CSV/metadata: {e}")
+
 
 
     def _compute_peak_stats_vector(self, t: np.ndarray, y: np.ndarray):
@@ -1407,26 +986,13 @@ class HDF5Viewer(QWidget):
                     win_end_str,
                 ])
 
-        # Write CSV (long format)
-        header = [
-            "channel",
-            "stat_name",
-            "stat_value",
-            "window_start_s",
-            "window_end_s",
-            "window_start_time",
-            "window_end_time",
-        ]
-
+        # Delegate CSV writing to peak_io helper
         try:
-            with open(file_path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow(header)
-                for r in rows:
-                    writer.writerow(r)
+            save_peak_stats_long_csv(file_path, rows)
         except Exception as e:
-            # You can replace this with a QMessageBox if you want
-            print(f"[warn] Failed to write CSV: {e}")
+            # Could be upgraded to a QMessageBox if desired
+            print(f"[warn] Failed to write peak stats CSV: {e}")
+
 
 
     def _init_start_datetime_from_filename(self, file_path: str):
@@ -1527,7 +1093,6 @@ class HDF5Viewer(QWidget):
             int(getattr(self, "ma_passes", 1)),
         )
 
-
     def _on_peaks_params_changed(self):
         """Sync GUI → peak detection state and trigger redraw."""
         if self.peaks_enable_checkbox is not None:
@@ -1561,9 +1126,6 @@ class HDF5Viewer(QWidget):
         self._update_peaks_widget_states()
 
         self._request_fetch()
-
-
-
     
     # -------------------------- FILE I/O --------------------------
     def load_file(self):
@@ -1728,7 +1290,6 @@ class HDF5Viewer(QWidget):
         self._shared_plot.setXRange(t0, t1, padding=0)
         self._request_fetch()
 
-
     # -------------------------- CHANNEL UI --------------------------
     def _build_channel_ui(self):
         # Clear checkboxes
@@ -1760,7 +1321,6 @@ class HDF5Viewer(QWidget):
         self.select_all_checkbox.blockSignals(True)
         self.select_all_checkbox.setChecked(False)
         self.select_all_checkbox.blockSignals(False)
-
 
     def _populate_cm_ref_combo(self):
         """Fill the common-mode reference combobox with channel names."""
@@ -1803,7 +1363,6 @@ class HDF5Viewer(QWidget):
 
         self._request_fetch()
 
-
     def _on_channel_toggled(self):
         # preserve view (your existing code)
         prev_x = prev_y = None
@@ -1824,9 +1383,6 @@ class HDF5Viewer(QWidget):
         # Rebuild plots with preserved ranges
         self._rebuild_plots(preserve_xrange=prev_x, preserve_yrange=prev_y)
         self._request_fetch()
-
-
-
 
     def toggle_select_all(self, state):
         block = (state == Qt.Checked)
@@ -1899,7 +1455,6 @@ class HDF5Viewer(QWidget):
             self.win_end_dtedit.setDateTime(qdt_end)
             self.win_start_dtedit.blockSignals(False)
             self.win_end_dtedit.blockSignals(False)
-
 
     def _request_fetch(self):
         self._update_timer.start(self._update_delay_ms)
@@ -2006,8 +1561,6 @@ class HDF5Viewer(QWidget):
                 y0, y1 = preserve_yrange
                 first_pw.setYRange(y0, y1, padding=0)
 
-
-
     def _make_plot_cell(self, ch_idx, label_font, label_side='left'):
         """Creates a QWidget cell containing [label|plot] or [plot|label]."""
         cell = QtWidget()
@@ -2105,8 +1658,6 @@ class HDF5Viewer(QWidget):
             pw.setYLink(first_pw)
     
         return first_pw
-
-
 
     # -------------------------- Overlay (cursor L-shape scale bars) --------------------------
     def _ensure_overlay(self, pw: pg.PlotWidget):
@@ -2247,10 +1798,6 @@ class HDF5Viewer(QWidget):
         ov['vtext'].setText(v_label)
         ov['vtext'].setPos(vx1 - offx, vy1 + offy * 0.2)
 
-
-
-
-
     # -------------------------- DATA FETCH/RENDER --------------------------
     def _compute_needed_range(self):
         if self._shared_plot is None:
@@ -2302,8 +1849,6 @@ class HDF5Viewer(QWidget):
         cache.put(key, arr)
         return arr
 
-
-
     def _get_common_mode_segment(self, ch_idx: int, sa: int, sb: int):
         """
         Return data segment for channel ch_idx in [sa:sb),
@@ -2325,7 +1870,6 @@ class HDF5Viewer(QWidget):
         # Subtract reference (reference channel will go near-zero itself)
         # The subtraction creates a new array; cached raw arrays are not modified.
         return apply_common_mode(raw, ref)
-
 
     def _get_filtered_segment(self, ch_idx: int, sa: int, sb: int):
         """
@@ -2575,14 +2119,13 @@ class HDF5Viewer(QWidget):
         }
 
         # ---------- 6) Draw vertical lines ----------
-        t_peaks = t[final_indices]
-        x_vals = []
-        y_vals = []
-        for tp in t_peaks:
-            x_vals.extend([tp, tp, np.nan])
-            y_vals.extend([y_min, y_max, np.nan])
-
-        peak_item.setData(x_vals, y_vals, _callSync='off')
+        set_peak_vertical_lines(
+            peak_item=peak_item,
+            t=t,
+            peak_indices=final_indices,
+            y_min=y_min,
+            y_max=y_max,
+        )
 
     def _format_cursor_timestamp(self, seconds_from_start: float) -> str:
         """
@@ -2602,7 +2145,6 @@ class HDF5Viewer(QWidget):
         dt = self.start_datetime + timedelta(seconds=s)
         ms = dt.microsecond // 1000
         return dt.strftime("%d/%m/%y %H:%M:%S") + f".{ms:03d}"
-
 
     def _update_peaks_widget_states(self):
         """Enable/disable relative vs absolute controls based on mode."""
@@ -2652,7 +2194,6 @@ class HDF5Viewer(QWidget):
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 self.stats_table.setItem(row_idx, col, item)
 
-
     def _fetch_and_render(self):
         if self.data is None or not self.selected_channels or self._shared_plot is None:
             return
@@ -2695,8 +2236,6 @@ class HDF5Viewer(QWidget):
             self._update_peaks_for_channel(ch_idx, t, y, y_min, y_max)
 
         self._update_peak_stats_table()
-
-
 
     # ---------------------- Cursor readout + active-plot overlay control ------------------------
     def _on_mouse_moved(self, pos, pw: pg.PlotWidget, ch_idx: int):
@@ -2785,10 +2324,6 @@ class HDF5Viewer(QWidget):
                 ctext.setAnchor((anchor_x, 0.0))   # (horizontal, vertical) in [0,1]
                 ctext.setText(label)
                 ctext.setPos(pos_x, y - offset_data_y)
-
-
-
-
 
     # ---------------------- Y-range estimation --------------------
     def _estimate_global_y_limits(self, channels, target_samples_per_ch: int = 20000):

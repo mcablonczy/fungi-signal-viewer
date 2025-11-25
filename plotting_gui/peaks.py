@@ -110,7 +110,7 @@ def find_pos_neg_peaks(
     return peaks_pos, peaks_neg
 
 def extract_ap_features_for_peak(
-    self, y: np.ndarray, idx_peak: int, fs: float):
+    y: np.ndarray, idx_peak: int, fs: float):
     """
     Extract AP-like features around a single peak in a 1D signal y.
 
