@@ -7,8 +7,6 @@ Created on Wed Nov 19 10:32:07 2025
 
 import sys 
 import os
-import math
-import h5py
 import numpy as np
 import pyqtgraph as pg
 import math
@@ -35,7 +33,7 @@ from PyQt5.QtGui import QFont
 
 
 from plotting_gui.peaks import (
-    estimate_noise_sigma_mad, PeakThresholdConfig, build_peak_find_kwargs, find_pos_neg_peaks,
+    PeakThresholdConfig, build_peak_find_kwargs, find_pos_neg_peaks,
     APFeatures, extract_ap_features_for_peak, analyze_peaks_full
 )
 
@@ -243,6 +241,7 @@ class HDF5Viewer(QWidget):
         self.ma_points = 5      # number of points
         self.ma_passes = 1      # number of passes
 
+        self.max_display_samples = 200_000   # total samples per channel per fetch
 
         # Peak indices & extracted windows
         self._peak_indices = {}   # ch_idx -> np.ndarray of global sample indices
@@ -253,7 +252,6 @@ class HDF5Viewer(QWidget):
         self.win_start_dtedit = None
         self.win_end_dtedit = None
         self.win_apply_button = None
-
 
         # Peak stats storage: ch_idx -> dict
         self._peak_stats = {}
@@ -269,12 +267,12 @@ class HDF5Viewer(QWidget):
         self.show_derivative = False
 
         # Data-related
-        self.h5file = None
-        self.data = None            # h5py dataset (channels x samples)
+        self.signal_source = None   # type: Optional[HDF5SignalSource]
         self.channel_names = []
         self.sample_rate = 100.0
         self.n_channels = 0
         self.n_samples = 0
+
         self.total_duration = 0.0
 
         # Selection / view state
@@ -301,9 +299,6 @@ class HDF5Viewer(QWidget):
 
         # NEW: peak overlay items per channel
         self._peak_items = {}        # ch_idx -> PlotDataItem
-
-        # Overlay scale bars per plot
-        self._overlays = {}
 
         # Overlay scale bars per plot
         self._overlays = {}
@@ -395,7 +390,7 @@ class HDF5Viewer(QWidget):
             pass
 
     def _on_extract_peak_windows_clicked(self):
-        if self.data is None:
+        if self.signal_source is None:
             return
         if not self.selected_channels:
             return
@@ -454,7 +449,7 @@ class HDF5Viewer(QWidget):
             value           : signal amplitude (µV)
             peak_time_s     : absolute peak time (s)
         """
-        if self.data is None or not self.selected_channels:
+        if self.signal_source is None or not self.selected_channels:
             return None
 
         half_sec = 0.5 * float(window_sec)
@@ -484,7 +479,8 @@ class HDF5Viewer(QWidget):
                 if hasattr(self, "_get_filtered_segment"):
                     y_win = self._get_filtered_segment(ch_idx, start, end)
                 else:
-                    y_win = np.asarray(self.data[ch_idx, start:end], dtype=float)
+                    y_win = self._get_segment(ch_idx, start, end)
+
 
                 # Time vectors
                 sample_idx = np.arange(start, end, dtype=int)
@@ -507,7 +503,6 @@ class HDF5Viewer(QWidget):
             return pd.DataFrame()
 
         return pd.DataFrame(rows)
-
 
     def _on_derivative_toggled(self, state):
         self.show_derivative = (state == Qt.Checked)
@@ -564,7 +559,7 @@ class HDF5Viewer(QWidget):
     
         Returns a list of dicts, each dict = one peak row.
         """
-        if self.data is None or self._shared_plot is None:
+        if self.signal_source is None or self._shared_plot is None:
             return []
     
         fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
@@ -715,7 +710,7 @@ class HDF5Viewer(QWidget):
 
     def _on_save_peaks_clicked(self):
         """Save one row per peak (minimal fields) + separate metadata CSV."""
-        if self.data is None or self._shared_plot is None:
+        if self.signal_source is None or self._shared_plot is None:
             return
     
         if not self.peaks_enable_checkbox.isChecked():
@@ -780,12 +775,8 @@ class HDF5Viewer(QWidget):
 
     def _compute_peak_stats_vector(self, t: np.ndarray, y: np.ndarray):
         """
-        Compute peak stats (count, amplitude, duration, freq/min) for a single
-        channel over the given window [t[0], t[-1]] using the current peak
-        detection settings (relative/absolute thresholds, biphasic merge, etc.).
-
-        Returns a dict with keys:
-            count, mean_amp, median_amp, mean_dur, median_dur, freq_per_min
+        Compute peak stats for a single channel over the given window [t[0], t[-1]]
+        using the SAME pipeline as everything else (analyze_peaks_full).
         """
         # Default "no peaks" stats
         empty_stats = {
@@ -796,113 +787,23 @@ class HDF5Viewer(QWidget):
             "median_dur": np.nan,
             "freq_per_min": 0.0,
         }
-
+    
         if not getattr(self, "peaks_enabled", False):
             return empty_stats
-
+    
         if t.size == 0 or y.size == 0:
             return empty_stats
-
-        fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
-        y_float = np.asarray(y, dtype=float)
-
-        # ---------- 1) Estimate noise σ on this window ----------
-        sigma = estimate_noise_sigma_mad(y_float)
-
-
-        # ---------- 2) Build thresholds ----------
-        cfg = PeakThresholdConfig(
-            use_relative=getattr(self, "peaks_use_relative", True),
-            k_prom=getattr(self, "peaks_k_prom", 0.0),
-            k_height=getattr(self, "peaks_k_height", 0.0),
-            prom_abs=getattr(self, "peaks_prom_abs", 0.0),
-            height_abs=getattr(self, "peaks_height_abs", 0.0),
-            min_dist_s=getattr(self, "peaks_min_dist_s", 0.0),
-            min_width_s=getattr(self, "peaks_min_width_s", 0.0),
-        )
-        
-        kwargs = build_peak_find_kwargs(
-            sigma=sigma,
-            fs=fs,
-            cfg=cfg,
-        )
-
-
-        # ---------- Positive & negative peaks ----------
-        peaks_pos, peaks_neg = find_pos_neg_peaks(y_float, kwargs)
-
-        if peaks_pos.size == 0 and peaks_neg.size == 0:
+    
+        # Use the canonical pipeline
+        peak_data = self._detect_peaks_in_signal(t, y)
+        if peak_data is None:
             return empty_stats
+    
+        return self._summarize_peak_data(t, peak_data)
 
-        indices = np.concatenate([peaks_pos, peaks_neg])
-        signs = np.concatenate([
-            np.ones_like(peaks_pos, dtype=int),
-            -np.ones_like(peaks_neg, dtype=int),
-        ])
-
-        order = np.argsort(indices)
-        indices = indices[order]
-        signs = signs[order]
-
-        # ---------- Biphasic merge ----------
-        keep = np.ones(len(indices), dtype=bool)
-        window_s = getattr(self, "peaks_biphasic_window_s", 0.0)
-        if window_s > 0.0 and len(indices) > 1:
-            max_dt_samples = int(round(window_s * fs))
-            if max_dt_samples > 0:
-                for i in range(len(indices) - 1):
-                    if not keep[i]:
-                        continue
-                    j = i + 1
-                    if not keep[j]:
-                        continue
-                    if signs[i] != signs[j] and (indices[j] - indices[i]) <= max_dt_samples:
-                        keep[j] = False
-
-        final_indices = indices[keep]
-        if final_indices.size == 0:
-            return empty_stats
-
-        # ---------- Amplitudes & durations ----------
-        amps = np.abs(y_float[final_indices])
-
-        durations = []
-        for idx in final_indices:
-            amp = np.abs(y_float[idx] - med)
-            if amp <= 0:
-                durations.append(0.0)
-                continue
-            thresh = 0.5 * amp
-
-            left = idx
-            while left > 0 and np.abs(y_float[left] - med) >= thresh:
-                left -= 1
-
-            right = idx
-            n = len(y_float)
-            while right < n - 1 and np.abs(y_float[right] - med) >= thresh:
-                right += 1
-
-            width_samples = max(1, right - left)
-            durations.append(width_samples / fs)
-
-        durations = np.asarray(durations, dtype=float)
-
-        count = final_indices.size
-        window_duration = max(1e-6, t[-1] - t[0])
-        freq_per_min = count / (window_duration / 60.0)
-
-        return {
-            "count": int(count),
-            "mean_amp": float(np.mean(amps)) if count > 0 else np.nan,
-            "median_amp": float(np.median(amps)) if count > 0 else np.nan,
-            "mean_dur": float(np.mean(durations)) if durations.size > 0 else np.nan,
-            "median_dur": float(np.median(durations)) if durations.size > 0 else np.nan,
-            "freq_per_min": float(freq_per_min),
-        }
 
     def _on_classify_peaks_clicked(self):
-        if self.data is None or self._shared_plot is None:
+        if self.signal_source is None or self._shared_plot is None:
             return
 
         # Choose output path
@@ -918,15 +819,10 @@ class HDF5Viewer(QWidget):
 
         self._export_peak_stats_long_csv(file_path)
 
-    def _on_derivative_toggled(self, state):
-        self.show_derivative = (state == Qt.Checked)
-        # Just re-fetch & redraw with the same view
-        self._request_fetch()
-
 
     def _export_peak_stats_long_csv(self, file_path: str):
         """Export peak stats for ALL channels in current view window to a long-format CSV."""
-        if self.data is None or self._shared_plot is None:
+        if self.signal_source is None or self._shared_plot is None:
             return
 
         vb = self._shared_plot.getViewBox()
@@ -1092,6 +988,76 @@ class HDF5Viewer(QWidget):
             int(getattr(self, "ma_points", 1)),
             int(getattr(self, "ma_passes", 1)),
         )
+    
+    def _summarize_peak_data(
+        self,
+        t: np.ndarray,
+        peak_data: dict,
+    ) -> dict:
+        """
+        Given time vector t and a peak_data dict from _detect_peaks_in_signal
+        (i.e. from analyze_peaks_full), compute summary stats for this window.
+        """
+        empty_stats = {
+            "count": 0,
+            "mean_amp": np.nan,
+            "median_amp": np.nan,
+            "mean_dur": np.nan,
+            "median_dur": np.nan,
+            "freq_per_min": 0.0,
+        }
+    
+        # Safety checks
+        if t.size == 0 or peak_data is None:
+            return empty_stats
+    
+        peak_idx = peak_data.get("peak_idx", None)
+        if peak_idx is None or peak_idx.size == 0:
+            return empty_stats
+    
+        peak_amp = peak_data.get("peak_amp", None)
+        dur_full = peak_data.get("duration_full_s", None)
+    
+        if peak_amp is None or dur_full is None:
+            return empty_stats
+    
+        # Use absolute amplitude for stats (you can change this policy if needed)
+        amps = np.abs(np.asarray(peak_amp, dtype=float))
+        durs = np.asarray(dur_full, dtype=float)
+    
+        # Remove NaNs if present
+        amps = amps[np.isfinite(amps)]
+        durs = durs[np.isfinite(durs)]
+    
+        if amps.size == 0 or durs.size == 0:
+            return empty_stats
+    
+        count = int(amps.size)
+    
+        mean_amp = float(np.nanmean(amps)) if amps.size > 0 else np.nan
+        median_amp = float(np.nanmedian(amps)) if amps.size > 0 else np.nan
+    
+        mean_dur = float(np.nanmean(durs)) if durs.size > 0 else np.nan
+        median_dur = float(np.nanmedian(durs)) if durs.size > 0 else np.nan
+    
+        # Window duration → frequency per minute
+        t0 = float(t[0])
+        t1 = float(t[-1])
+        window_s = max(0.0, t1 - t0)
+        if window_s > 0:
+            freq_per_min = (count / window_s) * 60.0
+        else:
+            freq_per_min = 0.0
+    
+        return {
+            "count": count,
+            "mean_amp": mean_amp,
+            "median_amp": median_amp,
+            "mean_dur": mean_dur,
+            "median_dur": median_dur,
+            "freq_per_min": freq_per_min,
+        }
+
 
     def _on_peaks_params_changed(self):
         """Sync GUI → peak detection state and trigger redraw."""
@@ -1138,26 +1104,33 @@ class HDF5Viewer(QWidget):
 
         self.file_label.setText("Loading file… please wait")
         QApplication.processEvents()
-
+        
+        # Close any previous source
         if getattr(self, "signal_source", None) is not None:
             self.signal_source.close()
             self.signal_source = None
-
+        
         try:
-            self.h5file = h5py.File(file_path, "r")
-            self.data = self.h5file["amplifier_data"]  # shape: (channels, samples)
-            
-                        
-            self.n_channels, self.n_samples = self.data.shape
-
-            raw_names = self.h5file["channel_names"][:]
-            self.channel_names = [n.decode() if isinstance(n, (bytes, np.bytes_)) else str(n) for n in raw_names]
-
+            # Open via HDF5SignalSource
+            src = HDF5SignalSource.open(
+                path=file_path,
+                dataset_key="amplifier_data",
+                sample_rate_attr="sampling_rate_Hz",
+                channel_names_key="channel_names",
+            )
+            self.signal_source = src
+        
+            meta = src.metadata
+            self.sample_rate = float(meta.sample_rate)
+            self.n_channels = int(meta.n_channels)
+            self.n_samples = int(meta.n_samples)
+            self.channel_names = list(meta.channel_names)
+        
             # --- Build display order: map preferred names -> indices, then append leftovers ---
             name_to_idx = {str(n): i for i, n in enumerate(self.channel_names)}
             ordered = []
             seen = set()
-            
+        
             for nm in PREFERRED_ORDER:
                 nm = nm.strip()
                 if nm in name_to_idx:
@@ -1165,20 +1138,15 @@ class HDF5Viewer(QWidget):
                     if idx not in seen:
                         ordered.append(idx)
                         seen.add(idx)
-
-            # Append any channels not specified, preserving their original order
+        
             for i, nm in enumerate(self.channel_names):
                 if i not in seen:
                     ordered.append(i)
-
             self.display_order = ordered
-
-
-            self.sample_rate = float(self.h5file.attrs.get("sampling_rate_Hz", 1000.0))
-            self.total_duration = self.n_samples / self.sample_rate
+        
+            self.total_duration = self.n_samples / self.sample_rate if self.sample_rate > 0 else 0.0
             self._populate_cm_ref_combo()
-
-            
+                     
         except Exception as e:
             self.file_label.setText(f"Error loading file: {str(e)}")
             return
@@ -1239,17 +1207,26 @@ class HDF5Viewer(QWidget):
             self._shared_plot.setXRange(x0, x1, padding=0)
         self._request_fetch()
 
+        print(
+            f"[debug] fs={self.sample_rate} Hz, "
+            f"n_channels={self.n_channels}, n_samples={self.n_samples}, "
+            f"total_duration={self.total_duration:.3f} s"
+        )
+
+
     def closeEvent(self, event):
-        if self.h5file:
+        if getattr(self, "signal_source", None) is not None:
             try:
-                self.h5file.close()
+                self.signal_source.close()
             except Exception:
                 pass
+            self.signal_source = None
         event.accept()
+
 
     def _on_apply_window_times(self):
         """Apply the user-selected real-time window to the X range."""
-        if self.data is None or self._shared_plot is None:
+        if self.signal_source is None or self._shared_plot is None:
             return
         if self.start_datetime is None:
             return
@@ -1508,7 +1485,7 @@ class HDF5Viewer(QWidget):
 
     def _rebuild_plots(self, preserve_xrange=None, preserve_yrange=None):
         self._clear_plots()
-        if self.data is None or not self.selected_channels:
+        if self.signal_source is None or not self.selected_channels:
             self.time_start_label.setText("Start: 0.00 s")
             self.time_end_label.setText("End: 0.00 s")
             self.cursor_label.setText("Cursor — t: –, y: –, channel: –")
@@ -1760,7 +1737,7 @@ class HDF5Viewer(QWidget):
         ov['htext'].setPos(hx1, hy1 + offy)
 
         # ----------------- VERTICAL (AMPLITUDE, data in µV) -----------------
-        # IMPORTANT: we assume self.data / y are in microvolts (µV)
+        # IMPORTANT: we assume self.signal_source / y are in microvolts (µV)
         raw_dy_uV = px_dy * bar_px  # µV
         v_abs = abs(raw_dy_uV)
 
@@ -1828,10 +1805,12 @@ class HDF5Viewer(QWidget):
 
     def _get_segment(self, ch_idx: int, sa: int, sb: int):
         """
-        Return raw data segment [sa:sb) for channel ch_idx from the HDF5 dataset.
-    
-        Uses a small per-channel LRU cache to avoid re-reading the same slices.
+        Return data segment for channel ch_idx in [sa:sb), as a 1D numpy array.
+        Uses a per-channel LRU cache to avoid re-reading the same slices.
         """
+        if self.signal_source is None:
+            return np.asarray([], dtype=float)
+    
         cache = self._caches.get(ch_idx)
         if cache is None:
             cache = _LRUCache()
@@ -1842,12 +1821,13 @@ class HDF5Viewer(QWidget):
         if arr is not None:
             return arr
     
-        # Original layout: self.data has shape (channels, samples)
-        arr = self.data[ch_idx, sa:sb]
-        arr = np.asarray(arr)
+        # Delegate to HDF5SignalSource
+        arr = self.signal_source.get_segment(ch_idx, sa, sb)
+        arr = np.asarray(arr, dtype=float)
     
         cache.put(key, arr)
         return arr
+
 
     def _get_common_mode_segment(self, ch_idx: int, sa: int, sb: int):
         """
@@ -1937,195 +1917,73 @@ class HDF5Viewer(QWidget):
         cache.put(key, y)
         return y
 
-    def _update_peaks_for_channel(self, ch_idx: int, t: np.ndarray, y: np.ndarray, y_min: float, y_max: float):
+    def _update_peaks_for_channel(
+        self,
+        ch_idx: int,
+        t: np.ndarray,
+        y: np.ndarray,
+        y_min: float,
+        y_max: float,
+    ):
         """Update vertical peak lines + stats for a single channel in the current window."""
         peak_item = self._peak_items.get(ch_idx)
         if peak_item is None:
             return
-
-        if not self.peaks_enabled:
+    
+        empty_stats = {
+            "count": 0,
+            "mean_amp": np.nan,
+            "median_amp": np.nan,
+            "mean_dur": np.nan,
+            "median_dur": np.nan,
+            "freq_per_min": 0.0,
+        }
+    
+        # If peaks are globally disabled
+        if not getattr(self, "peaks_enabled", False):
             peak_item.setData([], [])
-            # still store "no peaks" stats
-            self._peak_stats[ch_idx] = {
-                "count": 0,
-                "mean_amp": np.nan,
-                "median_amp": np.nan,
-                "mean_dur": np.nan,
-                "median_dur": np.nan,
-                "freq_per_min": 0.0,
-            }
+            self._peak_stats[ch_idx] = empty_stats
+            self._peak_indices[ch_idx] = np.array([], dtype=int)
             return
-
+    
         if t.size == 0 or y.size == 0:
             peak_item.setData([], [])
-            self._peak_stats[ch_idx] = {
-                "count": 0,
-                "mean_amp": np.nan,
-                "median_amp": np.nan,
-                "mean_dur": np.nan,
-                "median_dur": np.nan,
-                "freq_per_min": 0.0,
-            }
+            self._peak_stats[ch_idx] = empty_stats
+            self._peak_indices[ch_idx] = np.array([], dtype=int)
             return
-
-        fs = float(self.sample_rate) if self.sample_rate > 0 else 1.0
-        y_float = np.asarray(y, dtype=float)
-        med = np.median(y_float)
-
-        # ---------- 1) Estimate noise σ on this window ----------
-        sigma = estimate_noise_sigma_mad(y_float)
-
-
-        # ---------- 2) Build prominence & height thresholds ----------
-        prom_val = None
-        height_val = None
-
-        if getattr(self, "peaks_use_relative", True):
-            if self.peaks_k_prom > 0.0:
-                prom_val = self.peaks_k_prom * sigma
-            if self.peaks_k_height > 0.0:
-                height_val = self.peaks_k_height * sigma
-        else:
-            if self.peaks_prom_abs > 0.0:
-                prom_val = self.peaks_prom_abs
-            if self.peaks_height_abs > 0.0:
-                height_val = self.peaks_height_abs
-
-        kwargs = {}
-        if prom_val is not None and prom_val > 0.0:
-            kwargs["prominence"] = prom_val
-        if height_val is not None and height_val > 0.0:
-            kwargs["height"] = height_val
-
-        if self.peaks_min_dist_s > 0.0:
-            dist_samples = int(round(self.peaks_min_dist_s * fs))
-            if dist_samples > 0:
-                kwargs["distance"] = dist_samples
-
-        if self.peaks_min_width_s > 0.0:
-            width_samples = int(round(self.peaks_min_width_s * fs))
-            if width_samples > 0:
-                kwargs["width"] = width_samples
-
-        # ---------- 3) Positive & negative peaks ----------
-        try:
-            peaks_pos, _props_pos = find_peaks(y_float, **kwargs)
-        except Exception:
-            peaks_pos = np.array([], dtype=int)
-
-        try:
-            peaks_neg, _props_neg = find_peaks(-y_float, **kwargs)
-        except Exception:
-            peaks_neg = np.array([], dtype=int)
-
-        if peaks_pos.size == 0 and peaks_neg.size == 0:
+    
+        # ---------- 1) Run canonical peak detection ----------
+        peak_data = self._detect_peaks_in_signal(t, y)
+        if peak_data is None:
             peak_item.setData([], [])
-            self._peak_stats[ch_idx] = {
-                "count": 0,
-                "mean_amp": np.nan,
-                "median_amp": np.nan,
-                "mean_dur": np.nan,
-                "median_dur": np.nan,
-                "freq_per_min": 0.0,
-            }
+            self._peak_stats[ch_idx] = empty_stats
+            self._peak_indices[ch_idx] = np.array([], dtype=int)
             return
-
-        # Combine with sign: +1 for positive, -1 for negative
-        indices = np.concatenate([peaks_pos, peaks_neg])
-        signs = np.concatenate([
-            np.ones_like(peaks_pos, dtype=int),
-            -np.ones_like(peaks_neg, dtype=int),
-        ])
-
-        order = np.argsort(indices)
-        indices = indices[order]
-        signs = signs[order]
-
-        # ---------- 4) Merge biphasic pairs (keep first extremum) ----------
-        keep = np.ones(len(indices), dtype=bool)
-        window_s = getattr(self, "peaks_biphasic_window_s", 0.0)
-        if window_s > 0.0 and len(indices) > 1:
-            max_dt_samples = int(round(window_s * fs))
-            if max_dt_samples > 0:
-                for i in range(len(indices) - 1):
-                    if not keep[i]:
-                        continue
-                    j = i + 1
-                    if not keep[j]:
-                        continue
-                    if signs[i] != signs[j] and (indices[j] - indices[i]) <= max_dt_samples:
-                        # biphasic event: keep first extremum only
-                        keep[j] = False
-
-        final_indices = indices[keep]
-        if final_indices.size == 0:
+    
+        peak_idx = peak_data.get("peak_idx", None)
+        if peak_idx is None or peak_idx.size == 0:
             peak_item.setData([], [])
-            self._peak_stats[ch_idx] = {
-                "count": 0,
-                "mean_amp": np.nan,
-                "median_amp": np.nan,
-                "mean_dur": np.nan,
-                "median_dur": np.nan,
-                "freq_per_min": 0.0,
-            }
+            self._peak_stats[ch_idx] = empty_stats
+            self._peak_indices[ch_idx] = np.array([], dtype=int)
             return
-
-        # final_indices: indices within current segment
-        # Convert to global sample indices
-        sa = getattr(self, "_current_sa", 0)
-        global_indices = final_indices + int(sa)
-        self._peak_indices[ch_idx] = global_indices
-
-
-        # ---------- 5) Amplitude & rough duration ----------
-        amps = np.abs(y_float[final_indices])
-
-        durations = []
-        for idx in final_indices:
-            # simple FWHM-like duration around median baseline
-            amp = np.abs(y_float[idx] - med)
-            if amp <= 0:
-                durations.append(0.0)
-                continue
-            thresh = 0.5 * amp
-
-            # walk left
-            left = idx
-            while left > 0 and np.abs(y_float[left] - med) >= thresh:
-                left -= 1
-
-            # walk right
-            right = idx
-            n = len(y_float)
-            while right < n - 1 and np.abs(y_float[right] - med) >= thresh:
-                right += 1
-
-            width_samples = max(1, right - left)
-            durations.append(width_samples / fs)
-
-        durations = np.asarray(durations, dtype=float)
-
-        count = final_indices.size
-        window_duration = max(1e-6, t[-1] - t[0])
-        freq_per_min = count / (window_duration / 60.0)
-
-        self._peak_stats[ch_idx] = {
-            "count": int(count),
-            "mean_amp": float(np.mean(amps)) if count > 0 else np.nan,
-            "median_amp": float(np.median(amps)) if count > 0 else np.nan,
-            "mean_dur": float(np.mean(durations)) if durations.size > 0 else np.nan,
-            "median_dur": float(np.median(durations)) if durations.size > 0 else np.nan,
-            "freq_per_min": float(freq_per_min),
-        }
-
-        # ---------- 6) Draw vertical lines ----------
+    
+        # ---------- 2) Draw vertical lines ----------
         set_peak_vertical_lines(
             peak_item=peak_item,
             t=t,
-            peak_indices=final_indices,
-            y_min=y_min,
-            y_max=y_max,
+            y_min=float(y_min),
+            y_max=float(y_max),
+            peak_indices=peak_idx,
         )
+    
+        # ---------- 3) Store global sample indices ----------
+        sa = int(getattr(self, "_current_sa", 0))
+        global_indices = np.asarray(peak_idx, dtype=int) + sa
+        self._peak_indices[ch_idx] = global_indices
+    
+        # ---------- 4) Compute and store stats ----------
+        stats = self._summarize_peak_data(t, peak_data)
+        self._peak_stats[ch_idx] = stats
 
     def _format_cursor_timestamp(self, seconds_from_start: float) -> str:
         """
@@ -2195,14 +2053,20 @@ class HDF5Viewer(QWidget):
                 self.stats_table.setItem(row_idx, col, item)
 
     def _fetch_and_render(self):
-        if self.data is None or not self.selected_channels or self._shared_plot is None:
+        if self.signal_source is None or not self.selected_channels or self._shared_plot is None:
             return
 
         self._peak_stats.clear()
 
         sa, sb = self._compute_needed_range()
-        self._current_sa = sa   # <--- ADD THIS
-        t = np.arange(sa, sb) / self.sample_rate
+        n = sb - sa
+        stride = 1
+        if n > self.max_display_samples:
+            stride = int(math.ceil(n / self.max_display_samples))
+        
+        # time indices actually used for display
+        sample_idx = np.arange(sa, sb, stride, dtype=float)
+        t = sample_idx / self.sample_rate
 
         vb = self._shared_plot.getViewBox()
         x0, x1 = vb.viewRange()[0]
@@ -2215,22 +2079,23 @@ class HDF5Viewer(QWidget):
             y_min, y_max = -1.0, 1.0
 
         for ch_idx in sorted(self.selected_channels):
-            # 1) Get the base signal (with CM + filters if you have a wrapper)
-            if hasattr(self, "_get_filtered_segment"):
-                base_y = self._get_filtered_segment(ch_idx, sa, sb)
+            if stride > 1:
+                # For display only, decimated, possibly with reduced processing
+                base_y = self.signal_source.get_segment_decimated(ch_idx, sa, sb, stride)
+                # optional: very light filtering or none here
             else:
-                base_y = self._get_segment(ch_idx, sa, sb)
-
-            # 2) Optionally convert to derivative (dy/dt), keeping same length
+                base_y = self._get_filtered_segment(ch_idx, sa, sb)
+        
             if self.show_derivative:
-                # np.gradient keeps same length; multiply by fs to get per-second derivative
-                y = np.gradient(base_y) * self.sample_rate
+                y = np.gradient(base_y) * self.sample_rate / stride
             else:
                 y = base_y
-
+        
             curve = self._curves.get(ch_idx)
             if curve is None:
                 continue
+            curve.setData(t, y, _callSync='off')
+
 
             curve.setData(t, y, _callSync='off')
             self._update_peaks_for_channel(ch_idx, t, y, y_min, y_max)
@@ -2327,27 +2192,30 @@ class HDF5Viewer(QWidget):
 
     # ---------------------- Y-range estimation --------------------
     def _estimate_global_y_limits(self, channels, target_samples_per_ch: int = 20000):
-        if not channels or self.data is None or self.n_samples == 0:
+        if not channels or self.signal_source is None or self.n_samples == 0:
             return (-1.0, 1.0)
-
+    
         y_min = np.inf
         y_max = -np.inf
-
+    
+        stride = max(1, self.n_samples // max(1, target_samples_per_ch))
+    
         for ch_idx in channels:
-            stride = max(1, self.n_samples // max(1, target_samples_per_ch))
-            arr = np.asarray(self.data[ch_idx, 0:self.n_samples:stride])
+            arr = self.signal_source.get_channel_decimated(ch_idx, stride)
+            arr = np.asarray(arr, dtype=float)
             if arr.size == 0:
                 continue
             ch_min = float(np.nanmin(arr))
             ch_max = float(np.nanmax(arr))
             y_min = min(y_min, ch_min)
             y_max = max(y_max, ch_max)
-
+    
         if not np.isfinite(y_min) or not np.isfinite(y_max) or y_max <= y_min:
             return (-1.0, 1.0)
-
-        pad = 0.05 * (y_max - y_min) if (y_max > y_min) else 0.05
+    
+        pad = 0.05 * (y_max - y_min)
         return (y_min - pad, y_max + pad)
+
 
 
 if __name__ == "__main__":

@@ -68,7 +68,7 @@ class HDF5SignalSource:
         h5 = h5py.File(path, "r")
 
         dset = h5[dataset_key]
-        n_samples, n_channels = dset.shape
+        n_channels, n_samples = dset.shape
 
         # Try to get sample rate from attribute or a separate dataset
         fs = None
@@ -77,8 +77,7 @@ class HDF5SignalSource:
         elif sample_rate_attr in h5:
             fs = float(h5[sample_rate_attr][()])
         else:
-            # Fallback: user must overwrite later
-            fs = 1.0
+            fs = 100.0
 
         # Channel names
         if channel_names_key is not None and channel_names_key in h5:
@@ -97,24 +96,61 @@ class HDF5SignalSource:
             channel_names=channel_names,
         )
 
+
         return cls(h5, dset, meta)
 
     def get_segment(self, ch_idx: int, sa: int, sb: int) -> np.ndarray:
         """
         Return segment [sa:sb) for channel ch_idx as a 1D numpy array.
+    
+        Layout assumed: (channels, samples).
         """
         if ch_idx < 0 or ch_idx >= self.metadata.n_channels:
             raise IndexError(f"Channel index {ch_idx} out of range")
-
+    
         sa_clamped = max(0, min(sa, self.metadata.n_samples))
         sb_clamped = max(sa_clamped, min(sb, self.metadata.n_samples))
-
-        # HDF5 layout: (samples, channels)
-        seg = self._dataset[sa_clamped:sb_clamped, ch_idx]
+    
+        # HDF5 layout: (channels, samples)
+        seg = self._dataset[ch_idx, sa_clamped:sb_clamped]
         return np.asarray(seg)
+
 
     def close(self) -> None:
         try:
             self._h5.close()
         except Exception:
             pass
+
+    def get_channel_decimated(self, ch_idx: int, stride: int) -> np.ndarray:
+        """
+        Return a decimated copy of the full channel:
+        samples 0:n:stride for channel ch_idx, as a 1D np.ndarray.
+        Useful for global stats / y-range estimation.
+        """
+        if stride <= 0:
+            stride = 1
+
+        if ch_idx < 0 or ch_idx >= self.metadata.n_channels:
+            raise IndexError(f"Channel index {ch_idx} out of range")
+
+        # Dataset layout: (samples, channels)
+        seg = self._dataset[0:self.metadata.n_samples:stride, ch_idx]
+        return np.asarray(seg)
+
+    def get_segment_decimated(
+        self,
+        ch_idx: int,
+        sa: int,
+        sb: int,
+        stride: int,
+    ) -> np.ndarray:
+        if stride <= 1:
+            return self.get_segment(ch_idx, sa, sb)
+    
+        sa_clamped = max(0, min(sa, self.metadata.n_samples))
+        sb_clamped = max(sa_clamped, min(sb, self.metadata.n_samples))
+    
+        # assuming layout (channels, samples) as in open()
+        seg = self._dataset[ch_idx, sa_clamped:sb_clamped:stride]
+        return np.asarray(seg)
